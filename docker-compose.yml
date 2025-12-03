@@ -9,8 +9,8 @@ services:
     environment:
       - PORT=3000
     networks:
-      - npm_network
+      - npm_default
 
 networks:
-  npm_network:
+  npm_default:
     external: true
