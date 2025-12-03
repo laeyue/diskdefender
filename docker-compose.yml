@@ -2,10 +2,15 @@ version: '3.8'
 services:
   disk-defender:
     build: .
-    image: disk-defender:latest
-    container_name: disk-defender
+    container_name: diskdefender
     ports:
       - "3000:3000"
     restart: unless-stopped
     environment:
       - PORT=3000
+    networks:
+      - npm_network
+
+networks:
+  npm_network:
+    external: true
