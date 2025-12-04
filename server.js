@@ -217,6 +217,27 @@ setInterval(() => {
 
 }, 100);
 
+function resetGame() {
+    console.log("Resetting game state...");
+    if (countdownTimer) clearInterval(countdownTimer);
+    gameState.status = 'LOBBY';
+    gameState.countdown = null;
+    gameState.requests = [];
+    gameState.gameResult = null;
+    // Reset players ready state
+    Object.values(gameState.players).forEach(p => p.ready = false);
+    
+    TEAMS.forEach(t => {
+        gameState.teams[t].hp = MAX_HP;
+        gameState.teams[t].score = 0;
+        gameState.teams[t].cache = 20;
+        gameState.teams[t].cooldowns = {};
+        gameState.teams[t].targetPos = 100;
+    });
+    io.emit('lobby_update', gameState.players);
+    io.emit('init_game', gameState);
+}
+
 function endGame(reason) {
   gameState.status = 'GAMEOVER';
   
@@ -234,6 +255,13 @@ function endGame(reason) {
 
   gameState.gameResult = { winner: `Team ${winner}`, reason };
   io.emit('game_over', gameState.gameResult);
+
+  // Auto-reset after 10 seconds
+  setTimeout(() => {
+      if (gameState.status === 'GAMEOVER') {
+          resetGame();
+      }
+  }, 10000);
 }
 
 function checkElimination() {
@@ -242,6 +270,13 @@ function checkElimination() {
         gameState.status = 'GAMEOVER';
         gameState.gameResult = { winner: `Team ${aliveTeams[0]}`, reason: 'Last Team Standing' };
         io.emit('game_over', gameState.gameResult);
+        
+        // Auto-reset after 10 seconds
+        setTimeout(() => {
+            if (gameState.status === 'GAMEOVER') {
+                resetGame();
+            }
+        }, 10000);
     } else if (aliveTeams.length === 0) {
         endGame('Total System Failure');
     }
@@ -445,21 +480,7 @@ io.on('connection', (socket) => {
 
   socket.on('reset_lobby', () => {
       console.log("Reset lobby requested");
-      if (countdownTimer) clearInterval(countdownTimer);
-      gameState.status = 'LOBBY';
-      gameState.countdown = null;
-      gameState.requests = [];
-      gameState.gameResult = null;
-      // Reset players ready state
-      Object.values(gameState.players).forEach(p => p.ready = false);
-      
-      TEAMS.forEach(t => {
-          gameState.teams[t].hp = MAX_HP;
-          gameState.teams[t].score = 0;
-          gameState.teams[t].cache = 20;
-      });
-      io.emit('lobby_update', gameState.players);
-      io.emit('init_game', gameState);
+      resetGame();
   });
 
   socket.on('toggle_bots', () => {
