@@ -95,6 +95,13 @@ export default function DiskSchedulingGame() {
   });
   const [attackCooldowns, setAttackCooldowns] = useState({}); 
 
+  // Auto-select first rival as target
+  useEffect(() => {
+    if (!targetTeam && Object.keys(rivals).length > 0) {
+      setTargetTeam(Object.keys(rivals)[0]);
+    }
+  }, [rivals, targetTeam]);
+
   // Refs
   const requestRef = useRef(requests);
   requestRef.current = requests;
@@ -593,6 +600,12 @@ export default function DiskSchedulingGame() {
     }
 
     const effectiveTarget = overrideTarget || targetTeam;
+
+    if (!effectiveTarget) {
+        if (myRole === 'HACKER') addLog("No target selected!", 'warning');
+        return;
+    }
+
     const isMultiTarget = effectiveTarget === 'ALL';
     const finalCost = isMultiTarget ? attack.cost * 2 : attack.cost;
 
@@ -1186,6 +1199,15 @@ export default function DiskSchedulingGame() {
                         >
                           ALL RIVALS
                         </button>
+                      
+                      {/* DEBUG SELF */}
+                      <button 
+                          onClick={() => setTargetTeam(myTeam)}
+                          className={`px-2 py-1 text-[10px] font-bold rounded border border-dashed border-gray-600 text-gray-500 hover:text-white ml-2 ${targetTeam === myTeam ? 'bg-gray-700 text-white' : ''}`}
+                          title="Debug: Target Self"
+                      >
+                          SELF
+                      </button>
                    </div>
                 </div>
 

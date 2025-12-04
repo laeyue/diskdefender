@@ -493,6 +493,14 @@ io.on('connection', (socket) => {
 
   // Driver Movement (Relay to teammates only)
   socket.on('driver_input', ({ team, targetPos }) => {
+    const player = gameState.players[socket.id];
+    
+    // Security Check: Ensure player exists, is on the claimed team, and is a DRIVER
+    if (!player || player.team !== team || player.role !== 'DRIVER') {
+        // console.warn(`Unauthorized driver input from ${socket.id} (Role: ${player?.role}, Team: ${player?.team}) trying to control ${team}`);
+        return;
+    }
+
     // Broadcast to everyone in Team A room so Scheduler/Hacker see the arm move
     // console.log(`[${team}] Driver moved to ${targetPos}`);
     if (gameState.teams[team]) {
@@ -503,23 +511,45 @@ io.on('connection', (socket) => {
 
   // Scheduler Actions
   socket.on('highlight_request', ({ reqId }) => {
+    const player = gameState.players[socket.id];
+    if (!player || player.role !== 'SCHEDULER') return;
+
     const req = gameState.requests.find(r => r.id === reqId);
-    if (req) req.highlighted = !req.highlighted;
+    // Only allow highlighting requests for their own team
+    if (req && req.team === player.team) {
+        req.highlighted = !req.highlighted;
+    }
   });
 
   socket.on('drop_request', ({ reqId, team }) => {
-    gameState.requests = gameState.requests.filter(r => r.id !== reqId);
-    gameState.teams[team].hp = Math.max(0, gameState.teams[team].hp - 5);
-    io.to(team).emit('log', { text: "Request dropped manually. -5 HP", type: 'warning' });
+    const player = gameState.players[socket.id];
+    // Validate player is Scheduler and on the correct team
+    if (!player || player.role !== 'SCHEDULER' || player.team !== team) return;
+
+    const req = gameState.requests.find(r => r.id === reqId);
+    // Double check request belongs to team
+    if (req && req.team === team) {
+        gameState.requests = gameState.requests.filter(r => r.id !== reqId);
+        gameState.teams[team].hp = Math.max(0, gameState.teams[team].hp - 5);
+        io.to(team).emit('log', { text: "Request dropped manually. -5 HP", type: 'warning' });
+    }
   });
 
 const MAX_CACHE = 100;
 
   // Service Success (Client claims they caught it)
   socket.on('service_success', ({ reqId, team }) => {
+    const player = gameState.players[socket.id];
+    // Only allow team members (or specifically Driver) to claim success
+    if (!player || player.team !== team) return;
+
     const reqIndex = gameState.requests.findIndex(r => r.id === reqId);
     if (reqIndex > -1) {
         const req = gameState.requests[reqIndex];
+        
+        // Verify request belongs to team
+        if (req.team !== team) return;
+
         if (req.isFake) {
             io.to(team).emit('service_feedback', { sector: req.sector, text: "GHOST! 0 PTS", color: "purple" });
         } else {
@@ -533,6 +563,15 @@ const MAX_CACHE = 100;
 
   // Hacker Attacks
   socket.on('attack', ({ team, target, type }) => {
+    const player = gameState.players[socket.id];
+    // Validate Hacker Role and Team
+    if (!player || player.role !== 'HACKER' || player.team !== team) return;
+
+    if (!target || (target !== 'ALL' && !TEAMS.includes(target))) {
+        console.log(`Attack failed: Invalid target '${target}' from ${player.name}`);
+        return;
+    }
+
     const attack = ATTACKS[type];
     const teamState = gameState.teams[team];
     
