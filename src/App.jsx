@@ -59,7 +59,7 @@ export default function DiskSchedulingGame() {
   const [playerName, setPlayerName] = useState(`Player ${Math.floor(Math.random() * 1000)}`);
   const [myTeam, setMyTeam] = useState('A');
   const [myRole, setMyRole] = useState(null); 
-  const [fillBots, setFillBots] = useState(true); // Only relevant in offline mode
+  const [fillBots, setFillBots] = useState(false); // Default to false
   
   // Game Logic State
   const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
@@ -117,6 +117,13 @@ export default function DiskSchedulingGame() {
   
   // --- Initialization ---
   useEffect(() => {
+    // Persistent Player ID (SessionStorage allows multi-tab testing)
+    let storedId = sessionStorage.getItem('dd_player_id');
+    if (!storedId) {
+        storedId = `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        sessionStorage.setItem('dd_player_id', storedId);
+    }
+
     // NOTE: To enable multiplayer, npm install socket.io-client and uncomment import
     // For this preview, we default to offline mode.
     let newSocket = null;
@@ -125,14 +132,39 @@ export default function DiskSchedulingGame() {
         // Use relative path to leverage Vite proxy
         newSocket = io({
             path: '/socket.io',
-            transports: ['websocket', 'polling']
+            transports: ['websocket', 'polling'],
+            auth: {
+                playerId: storedId
+            }
         }); 
         if (newSocket) {
             newSocket.on('connect', () => {
                 console.log("Socket connected!", newSocket.id);
                 setIsConnected(true);
-                setPlayerName(`User-${newSocket.id.slice(0, 5)}`);
+                // Only set default name if we don't have one (server will override on rejoin)
+                if (playerName.startsWith('Player')) {
+                     setPlayerName(`User-${newSocket.id.slice(0, 5)}`);
+                }
             });
+            
+            newSocket.on('rejoin_success', ({ team, role, name, state }) => {
+                console.log("Rejoined session:", team, role);
+                setMyTeam(team);
+                setMyRole(role);
+                setPlayerName(name);
+                setGameState(state.status);
+                if (state.status === 'COUNTDOWN') setCountdown(state.countdown);
+                
+                // Sync Arm Position on Rejoin
+                if (state.teams[team] && state.teams[team].targetPos !== undefined) {
+                    const pos = state.teams[team].targetPos;
+                    setTargetPos(pos);
+                    targetPosRef.current = pos;
+                    setArmPos(pos);
+                    armPosRef.current = pos;
+                }
+            });
+
             newSocket.on('connect_error', (err) => {
                 console.error("Socket connection error:", err);
             });
@@ -143,7 +175,11 @@ export default function DiskSchedulingGame() {
             
             // Server Listeners
             newSocket.on('init_game', (state) => {
+                console.log("Init game received. Bots:", state.fillBots);
                 setGameState(state.status);
+                // If server sends fillBots, use it. Otherwise default to false.
+                setFillBots(state.fillBots !== undefined ? state.fillBots : false);
+                
                 if (state.status === 'COUNTDOWN') {
                     setCountdown(state.countdown);
                 }
@@ -165,14 +201,15 @@ export default function DiskSchedulingGame() {
 
             newSocket.on('game_tick', (data) => {
                 const currentTeam = myTeamRef.current;
-                // Sync State
+                // Sync Global State
                 setTimeLeft(data.timeLeft);
+                
                 const myTeamData = data.teams[currentTeam];
                 if (myTeamData) {
                     setHp(myTeamData.hp);
-                    setCache(myTeamData.cache);
                     setScore(myTeamData.score);
                 }
+
                 // Sync Rivals
                 setRivals(prevRivals => {
                     const newRivals = {};
@@ -187,9 +224,23 @@ export default function DiskSchedulingGame() {
                     });
                     return newRivals;
                 });
+            });
+
+            newSocket.on('team_data', (data) => {
+                // Sync Private Team Data
+                setCache(data.cache);
                 
-                // Sync Requests (Filter for my team)
-                let myReqs = data.requests.filter(r => r.team === currentTeam);
+                // Sync Arm Position for non-drivers (catch-up mechanism)
+                if (myRoleRef.current !== 'DRIVER' && data.targetPos !== undefined) {
+                        // Only update if significantly different to avoid jitter from latency
+                        if (Math.abs(targetPosRef.current - data.targetPos) > 2) {
+                            setTargetPos(data.targetPos);
+                            targetPosRef.current = data.targetPos;
+                        }
+                }
+
+                // Sync Requests (Already filtered for my team by server)
+                let myReqs = data.requests;
                 
                 // Visibility Rule: Driver only sees highlighted requests
                 if (myRoleRef.current === 'DRIVER') {
@@ -203,13 +254,15 @@ export default function DiskSchedulingGame() {
                 // Teammate moved the arm
                 // Double check team to prevent cross-talk
                 if (team === myTeamRef.current) {
+                    // console.log("Arm update received:", targetPos);
                     setTargetPos(targetPos);
                     targetPosRef.current = targetPos;
                 }
             });
 
             newSocket.on('debuff_received', ({ type }) => {
-                applyDebuff(type, "Unknown");
+                console.log("Debuff received:", type);
+                applyDebuff(type, "Unknown", true);
             });
 
             newSocket.on('service_feedback', (data) => {
@@ -299,6 +352,7 @@ export default function DiskSchedulingGame() {
       // If connected, server sends request updates. If offline, we simulate.
       if (!isConnected) {
           runOfflineRequestLogic(now);
+          if (fillBots) runOfflineBotLogic();
       }
 
       // --- 4. Servicing Logic ---
@@ -400,6 +454,18 @@ export default function DiskSchedulingGame() {
             if (r.status === 'critical' && !r.highlighted && !r.isFake) handleSchedulerPrioritize(r.id);
         });
     }
+    // HACKER BOT
+    if (myRole !== 'HACKER') {
+        if (cache >= 60 && Math.random() < 0.005) {
+             const atkKeys = Object.keys(ATTACKS);
+             const randomAtk = atkKeys[Math.floor(Math.random() * atkKeys.length)];
+             const rivalKeys = Object.keys(rivals);
+             if (rivalKeys.length > 0) {
+                 const randomRival = rivalKeys[Math.floor(Math.random() * rivalKeys.length)];
+                 executeAttack(randomAtk, randomRival);
+             }
+        }
+    }
   };
 
   const runOfflineRequestLogic = (now) => {
@@ -491,14 +557,14 @@ export default function DiskSchedulingGame() {
     setGameResult({ winner, reason });
   };
 
-  const applyDebuff = (type, attackerName) => {
+  const applyDebuff = (type, attackerName, fromServer = false) => {
     addLog(`WARNING: Unknown intrusion detected!`, 'danger');
     if (type === 'FREEZE') {
       setDebuffs(prev => ({ ...prev, frozen: true }));
       setTimeout(() => setDebuffs(prev => ({ ...prev, frozen: false })), ATTACKS.FREEZE.duration);
     } else if (type === 'GHOST') {
       // Only spawn local fakes if offline. Online, the server sends them.
-      if (!isConnected) {
+      if (!isConnected && !fromServer) {
           const fakes = Array.from({length: 6}).map(() => ({
             id: `fake-${Date.now()}-${Math.random()}`,
             sector: Math.floor(Math.random() * 200),
@@ -516,7 +582,7 @@ export default function DiskSchedulingGame() {
     }
   };
 
-  const executeAttack = (attackKey) => {
+  const executeAttack = (attackKey, overrideTarget = null) => {
     const attack = ATTACKS[attackKey];
     const now = Date.now();
     
@@ -526,12 +592,13 @@ export default function DiskSchedulingGame() {
         return;
     }
 
-    const isMultiTarget = targetTeam === 'ALL';
+    const effectiveTarget = overrideTarget || targetTeam;
+    const isMultiTarget = effectiveTarget === 'ALL';
     const finalCost = isMultiTarget ? attack.cost * 2 : attack.cost;
 
     if (cache >= finalCost) {
       if (isConnected) {
-          socket.emit('attack', { team: myTeamRef.current, target: targetTeam, type: attackKey });
+          socket.emit('attack', { team: myTeamRef.current, target: effectiveTarget, type: attackKey });
           // Optimistically update cache and cooldown
           setCache(prev => prev - finalCost);
           setAttackCooldowns(prev => ({ ...prev, [attackKey]: now + attack.cooldown }));
@@ -541,7 +608,7 @@ export default function DiskSchedulingGame() {
           setAttackCooldowns(prev => ({ ...prev, [attackKey]: now + attack.cooldown }));
           setRivals(prev => {
             const next = { ...prev };
-            const targets = isMultiTarget ? Object.keys(next) : [targetTeam];
+            const targets = isMultiTarget ? Object.keys(next) : [effectiveTarget];
             targets.forEach(tKey => {
                 const target = next[tKey];
                 if (target && target.hp > 0) {
@@ -619,7 +686,7 @@ export default function DiskSchedulingGame() {
   // --- Views ---
 
   // 1. LOBBY VIEW
-  if (gameState === 'COUNTDOWN') {
+  if (gameState === 'COUNTDOWN' && myRole) {
       return (
         <div className="flex flex-col items-center justify-center h-screen bg-gray-950 text-white font-mono">
             <div className="text-center animate-pulse">
@@ -631,7 +698,8 @@ export default function DiskSchedulingGame() {
       );
   }
 
-  if (gameState === 'LOBBY') {
+  // Show Lobby if we are in LOBBY state OR if we are in game but haven't picked a role yet (e.g. refresh/reconnect)
+  if (gameState === 'LOBBY' || !myRole) {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-gray-950 text-white font-mono p-6">
         <div className="max-w-4xl w-full bg-gray-900 border border-gray-800 rounded-2xl p-8 shadow-2xl relative overflow-hidden">
@@ -641,7 +709,7 @@ export default function DiskSchedulingGame() {
             <h1 className="text-4xl font-bold mb-2 tracking-widest text-white">DISK DRIVE DEFENDER</h1>
             <div className="flex items-center justify-center gap-2 text-sm text-gray-400">
                 {isConnected ? <Wifi size={16} className="text-green-500"/> : <WifiOff size={16} className="text-red-500"/>}
-                <span>{isConnected ? "CONNECTED TO SERVER" : "OFFLINE MODE"}</span>
+                <span>{isConnected ? (gameState === 'PLAYING' ? "GAME IN PROGRESS - JOIN NOW" : "CONNECTED TO SERVER") : "OFFLINE MODE"}</span>
             </div>
           </div>
 
@@ -716,6 +784,27 @@ export default function DiskSchedulingGame() {
             {/* Right: Lobby Options */}
             <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700 flex flex-col justify-between">
                <div>
+                 {/* Global Lobby Status */}
+                 {isConnected && (
+                    <div className="mb-6 p-3 bg-gray-900 rounded border border-gray-800">
+                        <h4 className="text-xs font-bold text-gray-500 uppercase mb-2">Lobby Status</h4>
+                        <div className="flex justify-between text-sm">
+                            {TEAMS.map(t => {
+                                const count = Object.values(lobbyPlayers).filter(p => p.team === t).length;
+                                return (
+                                    <div key={t} className={`${count > 0 ? 'text-white' : 'text-gray-600'}`}>
+                                        Team {t}: <span className={count === 3 ? 'text-green-400' : 'text-blue-400'}>{count}/3</span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <div className="mt-2 text-xs text-gray-500 flex items-center gap-2">
+                            <Bot size={12} /> 
+                            Bots: <span className={fillBots ? 'text-green-400' : 'text-gray-600'}>{fillBots ? 'ACTIVE' : 'DISABLED'}</span>
+                        </div>
+                    </div>
+                 )}
+
                  <h3 className="font-bold text-white mb-4 flex items-center gap-2">
                    <Users size={18} /> TEAM ROSTER ({TEAM_CONFIG[myTeam].label})
                  </h3>
@@ -742,38 +831,65 @@ export default function DiskSchedulingGame() {
                         </div>
                     ))}
 
-                    {/* Bot Slots */}
-                    {!isConnected && ['Bot Alpha', 'Bot Beta'].map((bot, i) => (
-                      <div key={i} className="flex justify-between items-center p-2 bg-gray-900/50 rounded border border-gray-800 opacity-70">
-                        <div className="flex items-center gap-2 text-gray-500"><Bot size={14} /> {fillBots ? bot : 'Empty Slot'}</div>
-                        <span className="text-xs font-mono text-gray-600">{fillBots ? 'AUTO-FILL' : 'WAITING...'}</span>
-                      </div>
-                    ))}
+                    {/* Bot Slots (Auto-fill) */}
+                    {(() => {
+                        const teamPlayers = isConnected 
+                            ? Object.values(lobbyPlayers).filter(p => p.team === myTeam)
+                            : (myRole ? [{ role: myRole }] : []);
+                        
+                        const takenRoles = teamPlayers.map(p => p.role).filter(Boolean);
+                        const allRoles = ['DRIVER', 'SCHEDULER', 'HACKER'];
+                        const missingRoles = allRoles.filter(r => !takenRoles.includes(r));
+
+                        return missingRoles.map(role => (
+                            <div key={role} className="flex justify-between items-center p-2 bg-gray-900/50 rounded border border-gray-800 opacity-70">
+                                <div className="flex items-center gap-2 text-gray-500">
+                                    <Bot size={14} /> 
+                                    {fillBots ? `Bot (${role})` : 'Empty Slot'}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xs font-mono text-gray-600">{fillBots ? 'AUTO-READY' : 'WAITING...'}</span>
+                                    {fillBots && <div className="w-2 h-2 rounded-full bg-green-900 animate-pulse"></div>}
+                                </div>
+                            </div>
+                        ));
+                    })()}
                     
                     {isConnected && Object.values(lobbyPlayers).filter(p => p.team === myTeam).length === 0 && (
                         <div className="text-xs text-gray-500 italic p-2">Join to see teammates...</div>
                     )}
                  </div>
 
-                 {!isConnected && (
-                    <label className="flex items-center gap-3 cursor-pointer group">
-                        <div className={`w-5 h-5 border rounded flex items-center justify-center ${fillBots ? 'bg-blue-600 border-blue-600' : 'border-gray-500'}`}>
-                        {fillBots && <div className="w-2 h-2 bg-white rounded-full"></div>}
-                        </div>
-                        <input type="checkbox" checked={fillBots} onChange={() => setFillBots(!fillBots)} className="hidden" />
-                        <span className="text-sm text-gray-300 group-hover:text-white">Fill empty slots with AI Teammates</span>
-                    </label>
-                 )}
+                 <label className="flex items-center gap-3 cursor-pointer group">
+                    <div className={`w-5 h-5 border rounded flex items-center justify-center ${fillBots ? 'bg-blue-600 border-blue-600' : 'border-gray-500'}`}>
+                    {fillBots && <div className="w-2 h-2 bg-white rounded-full"></div>}
+                    </div>
+                    <input 
+                        type="checkbox" 
+                        checked={fillBots} 
+                        onChange={() => {
+                            console.log("Toggle bots clicked. Connected:", isConnected);
+                            if (isConnected && socket) {
+                                socket.emit('toggle_bots');
+                            } else {
+                                setFillBots(!fillBots);
+                            }
+                        }} 
+                        className="hidden" 
+                    />
+                    <span className="text-sm text-gray-300 group-hover:text-white">Fill empty slots with AI Teammates</span>
+                 </label>
                </div>
                
                <button 
                 onClick={() => {
-                    if (isConnected) {
-                        // If already joined, toggle ready. If not, join lobby.
-                        const myPlayer = Object.values(lobbyPlayers).find(p => p.name === playerName && p.team === myTeamRef.current);
-                        if (myPlayer) {
+                    if (isConnected && socket) {
+                        const myPlayer = lobbyPlayers[socket.id];
+                        // If I am already in this team, toggle ready
+                        if (myPlayer && myPlayer.team === myTeam) {
                             socket.emit('toggle_ready');
                         } else {
+                            // Otherwise join/switch to this team
                             startGame();
                         }
                     } else {
@@ -783,17 +899,17 @@ export default function DiskSchedulingGame() {
                 disabled={!myRole}
                 className={`w-full py-4 mt-6 rounded-lg font-bold text-lg tracking-widest transition-all
                   ${!myRole ? 'bg-gray-700 text-gray-500 cursor-not-allowed' :
-                    isConnected 
-                        ? (Object.values(lobbyPlayers).find(p => p.name === playerName)?.ready 
+                    isConnected && socket && lobbyPlayers[socket.id]?.team === myTeam
+                        ? (lobbyPlayers[socket.id]?.ready 
                             ? 'bg-yellow-600 hover:bg-yellow-500 text-white shadow-lg shadow-yellow-900/20' 
                             : 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20')
-                        : 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/20'
+                        : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20'
                    }`}
                >
-                 {isConnected 
-                    ? (Object.values(lobbyPlayers).some(p => p.name === playerName) 
-                        ? (Object.values(lobbyPlayers).find(p => p.name === playerName)?.ready ? 'UNREADY' : 'READY UP') 
-                        : 'JOIN LOBBY') 
+                 {isConnected && socket
+                    ? (lobbyPlayers[socket.id]?.team === myTeam
+                        ? (lobbyPlayers[socket.id]?.ready ? 'UNREADY' : 'READY UP') 
+                        : (lobbyPlayers[socket.id] ? 'SWITCH TEAM' : 'JOIN LOBBY')) 
                     : 'START OFFLINE SIM'}
                </button>
             </div>

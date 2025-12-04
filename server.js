@@ -31,16 +31,19 @@ const GAME_DURATION = 300; // 5 mins
 const SPAWN_RATE = 2500;
 const REQUEST_LIFETIME = 12000;
 
+console.log("Server configuration loaded. Bot logic enabled.");
+
 // --- GAME STATE ---
 let countdownTimer = null;
 let gameState = {
   status: 'LOBBY', // LOBBY, COUNTDOWN, PLAYING, GAMEOVER
   timeLeft: GAME_DURATION,
   countdown: null,
+  fillBots: false, // Default to false
   teams: {
-    A: { hp: MAX_HP, cache: 20, score: 0, cooldowns: {} },
-    B: { hp: MAX_HP, cache: 20, score: 0, cooldowns: {} },
-    C: { hp: MAX_HP, cache: 20, score: 0, cooldowns: {} }
+    A: { hp: MAX_HP, cache: 20, score: 0, cooldowns: {}, targetPos: 100 },
+    B: { hp: MAX_HP, cache: 20, score: 0, cooldowns: {}, targetPos: 100 },
+    C: { hp: MAX_HP, cache: 20, score: 0, cooldowns: {}, targetPos: 100 }
   },
   requests: [], // Shared request pool
   gameResult: null,
@@ -112,13 +115,104 @@ setInterval(() => {
     io.emit('requests_update', gameState.requests);
   }
 
-  // 4. Broadcast State
+  // 4. Server-Side Bot Logic (Fill missing roles)
+  if (gameState.fillBots) {
+      TEAMS.forEach(teamId => {
+          const teamPlayers = Object.values(gameState.players).filter(p => p.team === teamId && p.connected);
+          const hasScheduler = teamPlayers.some(p => p.role === 'SCHEDULER');
+          const hasHacker = teamPlayers.some(p => p.role === 'HACKER');
+
+          // SCHEDULER BOT
+          if (!hasScheduler) {
+              gameState.requests.forEach(req => {
+                  // Bot highlights requests that are warning or critical, or randomly highlights fresh ones
+                  if (req.team === teamId && !req.highlighted && !req.isFake) {
+                      if (req.status === 'critical' || req.status === 'warning') {
+                          req.highlighted = true;
+                      } else if (Math.random() < 0.05) { // 5% chance per tick to highlight fresh requests
+                          req.highlighted = true;
+                      }
+                  }
+              });
+          }
+
+          // HACKER BOT
+          if (!hasHacker) {
+              const teamState = gameState.teams[teamId];
+              // 2% chance per tick to try an attack if cache is sufficient for at least one attack
+              if (teamState.cache >= 30 && Math.random() < 0.02) {
+                  const atkKeys = Object.keys(ATTACKS);
+                  // Filter attacks we can afford
+                  const affordableAttacks = atkKeys.filter(key => teamState.cache >= ATTACKS[key].cost);
+                  
+                  if (affordableAttacks.length > 0) {
+                      const randomAtkKey = affordableAttacks[Math.floor(Math.random() * affordableAttacks.length)];
+                      const attack = ATTACKS[randomAtkKey];
+                      
+                      // Check Cooldown
+                      const readyTime = teamState.cooldowns[randomAtkKey] || 0;
+                      
+                      if (now >= readyTime) {
+                          // Pick Target
+                          const rivals = TEAMS.filter(t => t !== teamId && gameState.teams[t].hp > 0);
+                          if (rivals.length > 0) {
+                              const targetTeam = rivals[Math.floor(Math.random() * rivals.length)];
+                              
+                              // Execute Attack
+                              teamState.cache -= attack.cost;
+                              teamState.cooldowns[randomAtkKey] = now + attack.cooldown;
+                              
+                              // Apply Effects
+                              io.to(targetTeam).emit('debuff_received', { type: randomAtkKey });
+                              io.to(targetTeam).emit('log', { text: "WARNING: Unknown intrusion detected!", type: 'danger' });
+                              io.to(teamId).emit('log', { text: `[BOT] Attack Successful: ${randomAtkKey} on Team ${targetTeam}`, type: 'success' });
+
+                              if (randomAtkKey === 'GHOST') {
+                                  for(let i=0; i<5; i++) {
+                                      gameState.requests.push({
+                                          id: `fake-${Date.now()}-${Math.random()}`,
+                                          team: targetTeam,
+                                          sector: Math.floor(Math.random() * 200),
+                                          birth: Date.now(),
+                                          status: 'fresh',
+                                          isFake: true,
+                                          highlighted: true
+                                      });
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+      });
+  }
+
+  // 5. Broadcast State (Optimized Split)
+  
+  // A. Global State (Lightweight - HP, Score, Time) -> Broadcast to ALL
+  const globalTeams = {};
+  TEAMS.forEach(t => {
+      globalTeams[t] = {
+          hp: gameState.teams[t].hp,
+          score: gameState.teams[t].score
+      };
+  });
+  
   io.emit('game_tick', {
-    teams: gameState.teams,
-    timeLeft: gameState.timeLeft,
-    // Optimizing bandwidth: Clients usually only need their own requests in full detail
-    // But sending all for simplicity in this prototype
-    requests: gameState.requests 
+    teams: globalTeams,
+    timeLeft: gameState.timeLeft
+  });
+
+  // B. Team Specific State (Heavy - Requests, Cache, Cooldowns) -> Send to Team Rooms
+  TEAMS.forEach(teamId => {
+      const teamRequests = gameState.requests.filter(r => r.team === teamId);
+      io.to(teamId).emit('team_data', {
+          cache: gameState.teams[teamId].cache,
+          cooldowns: gameState.teams[teamId].cooldowns,
+          targetPos: gameState.teams[teamId].targetPos,
+          requests: teamRequests
+      });
   });
 
 }, 100);
@@ -154,7 +248,45 @@ function checkElimination() {
 }
 // --- SOCKET HANDLERS ---
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  const playerId = socket.handshake.auth.playerId;
+  console.log('User connected:', socket.id, 'PlayerID:', playerId);
+
+  // Check for reconnection
+  let existingPlayer = Object.values(gameState.players).find(p => p.playerId === playerId);
+  
+  if (existingPlayer) {
+      console.log(`Player ${existingPlayer.name} reconnected.`);
+      
+      // Update socket ID mapping
+      // Remove old socket key
+      const oldSocketId = existingPlayer.id;
+      delete gameState.players[oldSocketId];
+      
+      // Update player object
+      existingPlayer.id = socket.id;
+      existingPlayer.connected = true;
+      if (existingPlayer.disconnectTimeout) {
+          clearTimeout(existingPlayer.disconnectTimeout);
+          delete existingPlayer.disconnectTimeout;
+      }
+
+      // Add to new socket key
+      gameState.players[socket.id] = existingPlayer;
+
+      // Re-join team room
+      socket.join(existingPlayer.team);
+
+      // Send rejoin success
+      socket.emit('rejoin_success', {
+          team: existingPlayer.team,
+          role: existingPlayer.role,
+          name: existingPlayer.name,
+          state: gameState
+      });
+
+      // Broadcast update (to show they are online)
+      io.emit('lobby_update', gameState.players);
+  }
 
   socket.on('join_lobby', ({ team, role, name }) => {
     // 1. Check Team Size
@@ -181,10 +313,12 @@ io.on('connection', (socket) => {
     // Store player info
     gameState.players[socket.id] = {
         id: socket.id,
+        playerId: playerId, // Store persistent ID
         name: name || 'Unknown',
         team,
         role,
-        ready: false
+        ready: false,
+        connected: true
     };
 
     // Broadcast updated player list to everyone
@@ -194,24 +328,46 @@ io.on('connection', (socket) => {
     socket.emit('init_game', gameState);
   });
 
-  socket.on('disconnect', () => {
-      console.log('User disconnected:', socket.id);
-      if (gameState.players[socket.id]) {
+  socket.on('leave_team', () => {
+      const player = gameState.players[socket.id];
+      if (player) {
+          console.log(`Player ${player.name} left the team.`);
+          socket.leave(player.team);
           delete gameState.players[socket.id];
           io.emit('lobby_update', gameState.players);
       }
+  });
 
-      // Auto-reset if lobby is empty
-      if (Object.keys(gameState.players).length === 0) {
-          console.log("Lobby empty. Resetting game state.");
-          gameState.status = 'LOBBY';
-          gameState.requests = [];
-          gameState.gameResult = null;
-          TEAMS.forEach(t => {
-              gameState.teams[t].hp = MAX_HP;
-              gameState.teams[t].score = 0;
-              gameState.teams[t].cache = 20;
-          });
+  socket.on('disconnect', () => {
+      console.log('User disconnected:', socket.id);
+      const player = gameState.players[socket.id];
+      
+      if (player) {
+          player.connected = false;
+          
+          // Give them 30 seconds to reconnect before removing
+          player.disconnectTimeout = setTimeout(() => {
+              if (!player.connected) {
+                  console.log(`Player ${player.name} timed out. Removing.`);
+                  delete gameState.players[socket.id];
+                  io.emit('lobby_update', gameState.players);
+                  
+                  // Auto-reset if lobby is empty
+                  if (Object.keys(gameState.players).length === 0) {
+                      console.log("Lobby empty. Resetting game state.");
+                      if (countdownTimer) clearInterval(countdownTimer);
+                      gameState.status = 'LOBBY';
+                      gameState.countdown = null;
+                      gameState.requests = [];
+                      gameState.gameResult = null;
+                      TEAMS.forEach(t => {
+                          gameState.teams[t].hp = MAX_HP;
+                          gameState.teams[t].score = 0;
+                          gameState.teams[t].cache = 20;
+                      });
+                  }
+              }
+          }, 30000);
       }
   });
 
@@ -251,7 +407,7 @@ io.on('connection', (socket) => {
     if (activeTeams.length === 0) return;
 
     const invalidTeams = activeTeams.filter(([t, count]) => count < 3);
-    if (invalidTeams.length > 0) {
+    if (invalidTeams.length > 0 && !gameState.fillBots) {
         const teamNames = invalidTeams.map(t => t[0]).join(', ');
         // Only spam log if everyone is ready but teams are invalid
         io.emit('log', { text: `Waiting for full teams: ${teamNames} need 3 players.`, type: 'warning' });
@@ -306,9 +462,21 @@ io.on('connection', (socket) => {
       io.emit('init_game', gameState);
   });
 
+  socket.on('toggle_bots', () => {
+      console.log(`[${socket.id}] Toggling bots. Old: ${gameState.fillBots}`);
+      gameState.fillBots = !gameState.fillBots;
+      console.log(`New Bot State: ${gameState.fillBots}`);
+      io.emit('init_game', gameState); // Broadcast new bot state
+      io.emit('log', { text: `Bots ${gameState.fillBots ? 'Enabled' : 'Disabled'}`, type: 'info' });
+  });
+
   // Driver Movement (Relay to teammates only)
   socket.on('driver_input', ({ team, targetPos }) => {
     // Broadcast to everyone in Team A room so Scheduler/Hacker see the arm move
+    // console.log(`[${team}] Driver moved to ${targetPos}`);
+    if (gameState.teams[team]) {
+        gameState.teams[team].targetPos = targetPos;
+    }
     socket.to(team).emit('arm_update', { targetPos, team });
   });
 
@@ -358,6 +526,7 @@ const MAX_CACHE = 100;
         const targets = target === 'ALL' ? TEAMS.filter(t => t !== team) : [target];
         
         targets.forEach(t => {
+            console.log(`Sending debuff ${type} to team ${t}`);
             io.to(t).emit('debuff_received', { type });
             io.to(t).emit('log', { text: "WARNING: Unknown intrusion detected!", type: 'danger' });
             
