@@ -64,6 +64,7 @@ export default function DiskSchedulingGame() {
   // Game Logic State
   const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
   const [gameResult, setGameResult] = useState(null);
+  const [countdown, setCountdown] = useState(null);
 
   // Player Stats (My Team)
   const [hp, setHp] = useState(MAX_HP);
@@ -143,6 +144,13 @@ export default function DiskSchedulingGame() {
             // Server Listeners
             newSocket.on('init_game', (state) => {
                 setGameState(state.status);
+                if (state.status === 'COUNTDOWN') {
+                    setCountdown(state.countdown);
+                }
+            });
+
+            newSocket.on('countdown_tick', (val) => {
+                setCountdown(val);
             });
 
             newSocket.on('game_start', () => {
@@ -191,10 +199,13 @@ export default function DiskSchedulingGame() {
                 setRequests(myReqs);
             });
 
-            newSocket.on('arm_update', ({ targetPos }) => {
+            newSocket.on('arm_update', ({ targetPos, team }) => {
                 // Teammate moved the arm
-                setTargetPos(targetPos);
-                targetPosRef.current = targetPos;
+                // Double check team to prevent cross-talk
+                if (team === myTeamRef.current) {
+                    setTargetPos(targetPos);
+                    targetPosRef.current = targetPos;
+                }
             });
 
             newSocket.on('debuff_received', ({ type }) => {
@@ -608,6 +619,18 @@ export default function DiskSchedulingGame() {
   // --- Views ---
 
   // 1. LOBBY VIEW
+  if (gameState === 'COUNTDOWN') {
+      return (
+        <div className="flex flex-col items-center justify-center h-screen bg-gray-950 text-white font-mono">
+            <div className="text-center animate-pulse">
+                <h1 className="text-6xl font-bold mb-4 text-yellow-400">PREPARING SYSTEM...</h1>
+                <div className="text-9xl font-black text-white">{countdown}</div>
+                <p className="mt-8 text-gray-500 tracking-widest">SYNCING NEURAL LINKS</p>
+            </div>
+        </div>
+      );
+  }
+
   if (gameState === 'LOBBY') {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-gray-950 text-white font-mono p-6">
@@ -838,29 +861,29 @@ export default function DiskSchedulingGame() {
 
   // 3. MAIN GAME VIEW
   return (
-    <div className="flex h-screen bg-gray-900 text-white font-mono overflow-hidden select-none">
+    <div className="flex flex-col md:flex-row h-screen bg-gray-900 text-white font-mono overflow-hidden select-none">
       
       {/* LEFT: MAIN GAME AREA */}
-      <div className="flex-1 flex flex-col relative">
+      <div className="flex-1 flex flex-col relative overflow-hidden">
         {/* HEADER */}
-        <div className="p-4 bg-gray-800 border-b border-gray-700 flex justify-between items-center shadow-lg z-10">
-          <div className="flex items-center space-x-6">
+        <div className="p-2 md:p-4 bg-gray-800 border-b border-gray-700 flex justify-between items-center shadow-lg z-10">
+          <div className="flex items-center space-x-2 md:space-x-6">
              {/* HP Bar */}
             <div className="flex flex-col">
-              <span className="text-[10px] text-gray-400 uppercase tracking-widest">Integrity</span>
-              <div className="w-32 h-2 bg-gray-700 rounded-full overflow-hidden border border-gray-600">
+              <span className="text-[8px] md:text-[10px] text-gray-400 uppercase tracking-widest">Integrity</span>
+              <div className="w-20 md:w-32 h-2 bg-gray-700 rounded-full overflow-hidden border border-gray-600">
                 <div className={`h-full transition-all duration-300 ${hp < 30 ? 'bg-red-500' : 'bg-green-500'}`} style={{ width: `${hp}%` }} />
               </div>
             </div>
              {/* Cache Bar */}
             <div className="flex flex-col">
-              <span className="text-[10px] text-gray-400 uppercase tracking-widest">Cache</span>
-              <div className="w-24 h-2 bg-gray-700 rounded-full overflow-hidden border border-gray-600 relative">
+              <span className="text-[8px] md:text-[10px] text-gray-400 uppercase tracking-widest">Cache</span>
+              <div className="w-16 md:w-24 h-2 bg-gray-700 rounded-full overflow-hidden border border-gray-600 relative">
                 <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${cache}%` }} />
               </div>
             </div>
             {/* Player ID */}
-            <div className="flex items-center gap-2 border-l border-gray-700 pl-6">
+            <div className="hidden md:flex items-center gap-2 border-l border-gray-700 pl-6">
                <User size={16} className="text-gray-400"/>
                <div className="flex flex-col">
                  <span className="text-xs font-bold text-white">{playerName}</span>
@@ -869,8 +892,8 @@ export default function DiskSchedulingGame() {
             </div>
           </div>
 
-          <div className="text-xl font-bold tracking-widest text-white/10 select-none pointer-events-none absolute left-1/2 -translate-x-1/2 flex flex-col items-center">
-             <span>DISK DEFENDER</span>
+          <div className="text-lg md:text-xl font-bold tracking-widest text-white/10 select-none pointer-events-none absolute left-1/2 -translate-x-1/2 flex flex-col items-center">
+             <span className="hidden md:block">DISK DEFENDER</span>
              {/* TIMER DISPLAY */}
              <div className={`mt-1 flex items-center gap-2 text-sm ${timeLeft < 60 ? 'text-red-500 animate-pulse' : 'text-blue-400'}`}>
                 <Clock size={14}/> {formatTime(timeLeft)}
@@ -988,7 +1011,7 @@ export default function DiskSchedulingGame() {
                       <span className="text-yellow-500">DRIVER STATUS:</span> {debuffs.frozen ? 'ERR_FROZEN' : 'ACTIVE'}
                    </div>
                 </div>
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 overflow-y-auto pr-2 pb-2 flex-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 overflow-y-auto pr-2 pb-2 flex-1">
                   {requests.sort((a,b) => getVisualSector(a) - getVisualSector(b)).map(req => (
                     <div key={req.id} className={`p-3 rounded border flex justify-between items-center bg-gray-900 transition-all ${req.highlighted ? 'border-yellow-400 ring-1 ring-yellow-400/50 bg-yellow-900/10' : 'border-gray-700 hover:border-gray-500'}`}>
                       <div>
@@ -1037,7 +1060,7 @@ export default function DiskSchedulingGame() {
                    </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-6 max-w-3xl mx-auto w-full">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 max-w-3xl mx-auto w-full overflow-y-auto max-h-[50vh] md:max-h-none pr-2">
                   {Object.keys(ATTACKS).map(key => {
                     const atk = ATTACKS[key];
                     const isMulti = targetTeam === 'ALL';
@@ -1075,7 +1098,7 @@ export default function DiskSchedulingGame() {
                     );
                   })}
                 </div>
-                <div className="mt-auto text-center text-xs text-gray-500 font-mono">
+                <div className="mt-auto text-center text-xs text-gray-500 font-mono pt-2">
                    Secure connection established. Deploy malware to disrupt rival I/O operations.
                 </div>
               </div>
@@ -1084,7 +1107,7 @@ export default function DiskSchedulingGame() {
         </div>
 
         {/* COMBAT LOG (Bottom Overlay) */}
-        <div className="absolute bottom-4 left-4 z-40 w-96 pointer-events-none">
+        <div className="absolute bottom-4 left-4 z-40 w-full md:w-96 pointer-events-none pr-8">
           <div className="flex flex-col gap-1 items-start">
              {logs.map(log => (
                <div key={log.id} className={`text-xs px-3 py-1.5 rounded bg-black/80 border-l-4 backdrop-blur-md animate-in slide-in-from-left fade-in duration-300 shadow-lg
@@ -1134,7 +1157,7 @@ export default function DiskSchedulingGame() {
       )}
 
       {/* RIGHT: RIVALS SIDEBAR */}
-      <div className="w-64 bg-gray-950 border-l border-gray-800 flex flex-col p-4 shadow-xl z-20">
+      <div className="w-full md:w-64 h-48 md:h-auto bg-gray-950 border-t md:border-t-0 md:border-l border-gray-800 flex flex-col p-4 shadow-xl z-20 overflow-y-auto">
         <div className="flex items-center gap-2 text-gray-400 mb-6 pb-2 border-b border-gray-800">
            <Swords size={16} />
            <span className="text-xs font-bold tracking-widest uppercase">Live Rivals</span>

@@ -32,9 +32,11 @@ const SPAWN_RATE = 2500;
 const REQUEST_LIFETIME = 12000;
 
 // --- GAME STATE ---
+let countdownTimer = null;
 let gameState = {
-  status: 'LOBBY', // LOBBY, PLAYING, GAMEOVER
+  status: 'LOBBY', // LOBBY, COUNTDOWN, PLAYING, GAMEOVER
   timeLeft: GAME_DURATION,
+  countdown: null,
   teams: {
     A: { hp: MAX_HP, cache: 20, score: 0, cooldowns: {} },
     B: { hp: MAX_HP, cache: 20, score: 0, cooldowns: {} },
@@ -168,6 +170,12 @@ io.on('connection', (socket) => {
         return;
     }
 
+    // Leave previous team room if exists to prevent cross-talk
+    const previousPlayerState = gameState.players[socket.id];
+    if (previousPlayerState && previousPlayerState.team) {
+        socket.leave(previousPlayerState.team);
+    }
+
     socket.join(team); // Join "Team A" room
     
     // Store player info
@@ -220,7 +228,16 @@ io.on('connection', (socket) => {
 
     // 1. Are ALL players ready?
     const allReady = players.every(p => p.ready);
-    if (!allReady) return;
+    if (!allReady) {
+        if (gameState.status === 'COUNTDOWN') {
+            console.log("Countdown cancelled.");
+            clearInterval(countdownTimer);
+            gameState.status = 'LOBBY';
+            gameState.countdown = null;
+            io.emit('init_game', gameState);
+        }
+        return;
+    }
 
     // 2. Validate Team Composition
     const teamCounts = { A: 0, B: 0, C: 0 };
@@ -241,16 +258,33 @@ io.on('connection', (socket) => {
         return;
     }
 
-    console.log("All players ready. Starting game...");
-    gameState.status = 'PLAYING';
-    gameState.timeLeft = GAME_DURATION;
-    gameState.requests = [];
-    TEAMS.forEach(t => {
-        gameState.teams[t].hp = MAX_HP;
-        gameState.teams[t].score = 0;
-        gameState.teams[t].cache = 20;
-    });
-    io.emit('game_start');
+    if (gameState.status !== 'COUNTDOWN') {
+        console.log("All players ready. Starting countdown...");
+        gameState.status = 'COUNTDOWN';
+        gameState.countdown = 5;
+        io.emit('init_game', gameState);
+
+        if (countdownTimer) clearInterval(countdownTimer);
+        
+        countdownTimer = setInterval(() => {
+            gameState.countdown--;
+            io.emit('countdown_tick', gameState.countdown);
+            
+            if (gameState.countdown <= 0) {
+                clearInterval(countdownTimer);
+                console.log("Countdown finished. Starting game...");
+                gameState.status = 'PLAYING';
+                gameState.timeLeft = GAME_DURATION;
+                gameState.requests = [];
+                TEAMS.forEach(t => {
+                    gameState.teams[t].hp = MAX_HP;
+                    gameState.teams[t].score = 0;
+                    gameState.teams[t].cache = 20;
+                });
+                io.emit('game_start');
+            }
+        }, 1000);
+    }
   });
 
   socket.on('reset_lobby', () => {
@@ -269,7 +303,7 @@ io.on('connection', (socket) => {
   // Driver Movement (Relay to teammates only)
   socket.on('driver_input', ({ team, targetPos }) => {
     // Broadcast to everyone in Team A room so Scheduler/Hacker see the arm move
-    socket.to(team).emit('arm_update', { targetPos });
+    socket.to(team).emit('arm_update', { targetPos, team });
   });
 
   // Scheduler Actions
