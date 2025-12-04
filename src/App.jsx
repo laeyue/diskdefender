@@ -905,6 +905,19 @@ export default function DiskSchedulingGame() {
               <div className="text-xs text-gray-400">Score</div>
               <div className="font-bold text-xl">{score}</div>
             </div>
+            {isConnected && (
+                <button 
+                    onClick={() => {
+                        if(confirm("Are you sure you want to reset the game for everyone?")) {
+                            socket.emit('reset_lobby');
+                        }
+                    }}
+                    className="p-2 bg-red-900/50 hover:bg-red-800 text-red-200 rounded border border-red-800 transition-colors"
+                    title="Force Reset Game"
+                >
+                    <Trash2 size={16} />
+                </button>
+            )}
           </div>
         </div>
 

@@ -289,14 +289,20 @@ io.on('connection', (socket) => {
 
   socket.on('reset_lobby', () => {
       console.log("Reset lobby requested");
+      if (countdownTimer) clearInterval(countdownTimer);
       gameState.status = 'LOBBY';
+      gameState.countdown = null;
       gameState.requests = [];
       gameState.gameResult = null;
+      // Reset players ready state
+      Object.values(gameState.players).forEach(p => p.ready = false);
+      
       TEAMS.forEach(t => {
           gameState.teams[t].hp = MAX_HP;
           gameState.teams[t].score = 0;
           gameState.teams[t].cache = 20;
       });
+      io.emit('lobby_update', gameState.players);
       io.emit('init_game', gameState);
   });
 
