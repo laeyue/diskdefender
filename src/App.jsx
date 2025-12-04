@@ -1069,6 +1069,17 @@ export default function DiskSchedulingGame() {
         <div className="flex-1 relative p-6 flex flex-col items-center bg-gray-900 bg-[radial-gradient(#1f2937_1px,transparent_1px)] [background-size:16px_16px]">
           
           {/* DEBUFF OVERLAYS */}
+          {hp <= 0 && (
+            <div className="absolute inset-0 z-[60] flex items-center justify-center bg-red-950/90 backdrop-blur-md">
+              <div className="text-center animate-in zoom-in duration-300">
+                <Skull size={64} className="mx-auto text-red-500 mb-4" />
+                <h2 className="text-4xl font-bold text-white mb-2 tracking-widest">ELIMINATED</h2>
+                <p className="text-red-300 font-mono">CRITICAL SYSTEM FAILURE</p>
+                <p className="text-sm text-gray-400 mt-4">Spectating remaining teams...</p>
+              </div>
+            </div>
+          )}
+
           {debuffs.frozen && (
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-blue-500/10 pointer-events-none backdrop-blur-sm">
               <div className="bg-blue-900/90 border border-blue-400 p-6 rounded text-center animate-pulse">

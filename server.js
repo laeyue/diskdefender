@@ -501,6 +501,9 @@ io.on('connection', (socket) => {
         return;
     }
 
+    // Dead Check
+    if (gameState.teams[team].hp <= 0) return;
+
     // Broadcast to everyone in Team A room so Scheduler/Hacker see the arm move
     // console.log(`[${team}] Driver moved to ${targetPos}`);
     if (gameState.teams[team]) {
@@ -513,6 +516,7 @@ io.on('connection', (socket) => {
   socket.on('highlight_request', ({ reqId }) => {
     const player = gameState.players[socket.id];
     if (!player || player.role !== 'SCHEDULER') return;
+    if (gameState.teams[player.team].hp <= 0) return;
 
     const req = gameState.requests.find(r => r.id === reqId);
     // Only allow highlighting requests for their own team
@@ -525,6 +529,7 @@ io.on('connection', (socket) => {
     const player = gameState.players[socket.id];
     // Validate player is Scheduler and on the correct team
     if (!player || player.role !== 'SCHEDULER' || player.team !== team) return;
+    if (gameState.teams[team].hp <= 0) return;
 
     const req = gameState.requests.find(r => r.id === reqId);
     // Double check request belongs to team
@@ -542,6 +547,7 @@ const MAX_CACHE = 100;
     const player = gameState.players[socket.id];
     // Only allow team members (or specifically Driver) to claim success
     if (!player || player.team !== team) return;
+    if (gameState.teams[team].hp <= 0) return;
 
     const reqIndex = gameState.requests.findIndex(r => r.id === reqId);
     if (reqIndex > -1) {
@@ -566,6 +572,7 @@ const MAX_CACHE = 100;
     const player = gameState.players[socket.id];
     // Validate Hacker Role and Team
     if (!player || player.role !== 'HACKER' || player.team !== team) return;
+    if (gameState.teams[team].hp <= 0) return;
 
     if (!target || (target !== 'ALL' && !TEAMS.includes(target))) {
         console.log(`Attack failed: Invalid target '${target}' from ${player.name}`);
