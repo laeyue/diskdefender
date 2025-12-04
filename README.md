@@ -71,7 +71,6 @@ Each team consists of three specialized roles. Cooperation is key to survival.
 *   `server.js` - The authoritative game server handling game loops, validation, and state.
 *   `src/App.jsx` - The main React application containing game logic, UI, and rendering.
 *   `src/components/` - Reusable UI components.
-*   `codedocumentation.md` - Detailed technical documentation of the codebase.
 
 ## 📜 License
 
